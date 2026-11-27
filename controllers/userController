@@ -1,0 +1,307 @@
+const userModel = require('../models/user.js');
+const bcrypt = require('bcrypt');
+const sendEmail = require('../utils/email.js');
+const otp_generator = require('otp-generator');
+const jwt = require('jsonwebtoken');
+
+exports.signUp = async (req, res) => {
+    try {
+        const { fullName, email, gender, password, age } = req.body;
+
+        const user = await userModel.findOne({email: email.toLowerCase()});
+
+        if (user) {
+            return res.status(400).json({
+                message: `User with Email: ${email} already exist`
+            })
+
+            
+        }
+        const saltedRounds = await bcrypt.genSalt(10)
+        const hashedPassword = await bcrypt.hash(password, saltedRounds)
+
+        const otp = otp_generator.generate(6, {lowerCaseAlphabets: false, upperCaseAlphabets: false, specialChars: false})
+
+        const data = {
+            fullName,
+            email: email.toLowerCase(),
+            gender,
+            password: hashedPassword,
+            age,
+            otp
+        }
+
+
+        const newUser = await userModel.create(data);
+
+        const emailContent = {
+            name: newUser.fullName,
+            email: newUser.email,
+            subject: 'Welcome to Zanzibar',
+            htmlContent: `htmlContent":"<html><head></head><body><p>Hello, ${newUser.fullName}</p>We are thrilled to have you onboard, Please use the OTP below to verify your account. <br>${otp} </p></body></html>`
+        }
+
+        await sendEmail(emailContent)
+
+        res.status(201).json({
+            message: 'User Created Successfully',
+            data: newUser
+        })
+
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+exports.getAllUsers = async (req, res) => {
+    try {
+        const allUsers = await userModel.find();
+
+        res.status(200).json({
+            message: `All users found and the length is: ${allUsers.length}`,
+            data: allUsers
+        })
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+exports.getOneUser = async (req, res) => {
+    try {
+        const { id } = req.params
+        const oneUser = await userModel.findById(id);
+
+        if (!oneUser) {
+            return res.status(400).json({
+                message: "User not Found"
+            })
+        }
+
+        res.status(200).json({
+            message: 'One User Retrieved Successfully',
+            data: oneUser
+        })
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+exports.updateUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { fullName, email, gender, password, age } = req.body;
+        const user = await userModel.findById(id);
+        if (!user) {
+            return res.status(400).json({
+                message: "User not Found"
+            })
+        }
+
+        if (email && email !== user.email){
+            const emailExist = await userModel.findOne({email: email.toLowerCase()})
+            if (emailExist) {
+                return res.status(404).json({
+                    message: 'Email already in use'
+                })
+            }
+        }
+
+        const data = {
+            fullName,
+            email,
+            gender,
+            password,
+            age
+        }
+
+        const updatedUser = await userModel.findByIdAndUpdate(id, data, {new: true})
+        res.status(201).json({
+            message: 'User Created Successfully',
+            data: updatedUser
+        })
+
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+exports.login = async (req, res) => {
+    try {
+        const { email, password } = req.body
+        const newUser = await userModel.findOne({email: email.toLowerCase()})
+        if (!newUser) {
+            return res.status(404).json({
+                message: "User not Found"
+            })
+        } 
+
+        const isPasswordCorrect = await bcrypt.compare(password, newUser.password)
+        if (isPasswordCorrect == false) {
+            return res.status(400).json({
+                message: "Invalid Password"
+            })
+        }
+
+        if (newUser.isVerified == false) {
+            return res.status(400).json({
+                message: "User not Verified, please check your email for the OTP sent to you."
+            })
+        }
+
+        const token = await jwt.sign({
+            id: newUser._id,
+            email: newUser.email
+        }, process.env.JWT_SECRET, {expiresIn: "30 minutes"})
+
+        res.status(200).json({
+            message: "Login Successful",
+            data: newUser,
+            token
+        })
+
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+
+exports.verifyEmail = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        const user = await userModel.findOne({ email: email.toLowerCase() })
+        if (!user) {
+            return res.status(400).json({
+                meessage: 'User not found'
+            })
+        }
+
+        if (user.otp !== otp) {
+            return res.status(400).json({
+                message: 'Invalid OTP'
+            })
+        }
+        user.isVerified = true;
+        user.status = "Active";
+        user.otp = null
+
+        // Save the Changes to the Database
+        await user.save()
+
+        res.status(200).json({
+            message: 'Account Verified Successfully',
+            data: user
+        })
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+
+exports.forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
+        const user = await userModel.findOne({ email: email.toLowerCase()})
+        if (!user) {
+            return res.status(400).json({
+                meessage: 'User not found'
+            })
+        }
+
+        const otp = otp_generator.generate(6, {upperCaseAlphabets: false, lowerCaseAlphabets: false, specialChars: false});
+
+        const emailContent = {
+            subject: 'Password Reset',
+            email,
+            name: user.fullName,
+            htmlContent: `htmlContent":"<html><head></head><body><p>Hello, ${user.fullName}</p>Your password reset was initialized, below is your OTP. If you did not initialize this request, please disregard this email. <br>${otp} </p></body></html>`
+        }
+
+        user.otp = otp;
+        await sendEmail({emailContent})
+        await user.save()
+
+
+        res.status(200).json({
+            message: 'Forgot Password is Successful'
+        })
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const {email, otp, newPassword, confirmPassword} = req.body
+        const user = await userModel.findOne({email: email.toLowerCase()})
+        if (user == null) {
+            return res.status(404).json({
+                message: "User not found"
+            })
+        }
+
+        if (user.otp !== otp) {
+            return res.status(401).json({
+                message: "Invalid OTP"
+            })
+        }
+
+        if (newPassword !== confirmPassword) {
+            return res.status(400).json({
+                message: "Confirm Password does not Match"
+            })
+        }
+
+        const saltedRounds = await bcrypt.genSalt(10)
+        const hashedPassword = await bcrypt.hash(newPassword, saltedRounds)
+        user.password = hashedPassword
+        user.otp = null
+        await user.save()
+
+        res.status(200).json({
+            message: 'Password changed Successfully'
+        })
+    } catch (error) {
+        res.status(500).json({
+            message: error.message
+        })
+    }
+}
+
+
+// exports.
+
+
+
+
+
+
+
+
+
+
+
+// exports.deleteUser = async (req, res) => {
+//     try {
+//         const {id} = req.params;
+
+//     } catch (error) {
+//         res.status(500).json({
+//             message: error.message
+//         })
+//     }
+// }
